@@ -1,384 +1,124 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+from flask import Flask, request, jsonify, render_template
 
-    <title>Solar ORC Fluid Recommendation Engine</title>
+app = Flask(__name__)
 
-    <style>
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
+
+@app.route("/")
+def home():
+    return render_template("index.html")
+
+
+@app.route("/simulate", methods=["POST"])
+def simulate():
+
+    try:
+        data = request.get_json()
+
+        # Get inputs from index.html
+        solar = float(data.get("solarIrradiance", 0))
+        area = float(data.get("collectorArea", 0))
+        efficiency = float(data.get("collectorEfficiency", 0))
+        ambient_temp = float(data.get("ambientTemperature", 30))
+        selected_fluid = data.get("workingFluid", "Auto")
+
+        # Basic validation
+        if solar <= 0 or area <= 0 or efficiency <= 0:
+            return jsonify({
+                "error": "Please enter valid solar irradiance, collector area and efficiency."
+            }), 400
+
+        # -------------------------------------------------
+        # 1. Solar heat available
+        # -------------------------------------------------
+        solar_power = solar * area
+        heat_absorption = solar_power * (efficiency / 100)
+
+        # Convert W to kW
+        heat_absorption_kw = heat_absorption / 1000
+
+        # -------------------------------------------------
+        # 2. Select working fluid
+        # -------------------------------------------------
+        if selected_fluid == "Auto":
+
+            if solar >= 800 and ambient_temp >= 30:
+                fluid = "R245fa"
+            elif solar >= 500:
+                fluid = "R134a"
+            elif solar >= 300:
+                fluid = "R123"
+            else:
+                fluid = "Isobutane"
+
+        else:
+            fluid = selected_fluid
+
+        # -------------------------------------------------
+        # 3. Estimated ORC efficiency
+        # -------------------------------------------------
+        fluid_efficiency = {
+            "R245fa": 0.14,
+            "R134a": 0.12,
+            "R123": 0.15,
+            "Isobutane": 0.13
         }
 
-        body {
-            font-family: Arial, sans-serif;
-            background: linear-gradient(135deg, #0f172a, #1e3a8a);
-            min-height: 100vh;
-            color: #ffffff;
-            padding: 30px 15px;
+        orc_efficiency = fluid_efficiency.get(fluid, 0.12)
+
+        # Adjust slightly according to solar temperature
+        temperature_factor = max(
+            0.7,
+            min(1.1, 1 + (ambient_temp - 25) * 0.005)
+        )
+
+        system_efficiency = orc_efficiency * temperature_factor * 100
+
+        # -------------------------------------------------
+        # 4. Net power output
+        # -------------------------------------------------
+        net_power = heat_absorption_kw * (system_efficiency / 100)
+
+        # -------------------------------------------------
+        # 5. Approximate pressures
+        # -------------------------------------------------
+        evaporator_pressure = {
+            "R245fa": 15.0,
+            "R134a": 12.0,
+            "R123": 10.0,
+            "Isobutane": 20.0
         }
 
-        .container {
-            max-width: 900px;
-            margin: auto;
+        condenser_pressure = {
+            "R245fa": 2.0,
+            "R134a": 3.0,
+            "R123": 1.5,
+            "Isobutane": 4.0
         }
 
-        .header {
-            text-align: center;
-            margin-bottom: 30px;
-        }
-
-        .header h1 {
-            font-size: 34px;
-            margin-bottom: 10px;
-        }
-
-        .header p {
-            color: #cbd5e1;
-            font-size: 16px;
-        }
-
-        .card {
-            background: rgba(255, 255, 255, 0.96);
-            color: #111827;
-            border-radius: 18px;
-            padding: 30px;
-            box-shadow: 0 20px 50px rgba(0,0,0,0.3);
-        }
-
-        .grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-        }
-
-        .input-group {
-            display: flex;
-            flex-direction: column;
-        }
-
-        label {
-            font-weight: bold;
-            margin-bottom: 8px;
-        }
-
-        input, select {
-            padding: 13px;
-            border: 1px solid #cbd5e1;
-            border-radius: 8px;
-            font-size: 15px;
-            outline: none;
-        }
-
-        input:focus, select:focus {
-            border-color: #2563eb;
-        }
-
-        .full {
-            grid-column: 1 / -1;
-        }
-
-        button {
-            width: 100%;
-            margin-top: 25px;
-            padding: 15px;
-            border: none;
-            border-radius: 9px;
-            background: #2563eb;
-            color: white;
-            font-size: 17px;
-            font-weight: bold;
-            cursor: pointer;
-        }
-
-        button:hover {
-            background: #1d4ed8;
-        }
-
-        button:disabled {
-            background: #94a3b8;
-            cursor: not-allowed;
-        }
-
-        .results {
-            margin-top: 25px;
-            display: none;
-        }
-
-        .results h2 {
-            margin-bottom: 15px;
-            color: #1e3a8a;
-        }
-
-        .result-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 15px;
-        }
-
-        .result-box {
-            background: #f1f5f9;
-            border-radius: 10px;
-            padding: 18px;
-        }
-
-        .result-box span {
-            display: block;
-            color: #64748b;
-            font-size: 13px;
-            margin-bottom: 5px;
-        }
-
-        .result-box strong {
-            font-size: 20px;
-            color: #0f172a;
-        }
-
-        .optimal {
-            grid-column: 1 / -1;
-            background: #dcfce7;
-            border: 1px solid #86efac;
-        }
-
-        .optimal strong {
-            color: #166534;
-            font-size: 24px;
-        }
-
-        .error {
-            margin-top: 20px;
-            padding: 15px;
-            background: #fee2e2;
-            color: #991b1b;
-            border-radius: 8px;
-            display: none;
-        }
-
-        .footer {
-            text-align: center;
-            margin-top: 25px;
-            color: #cbd5e1;
-            font-size: 13px;
-        }
-
-        @media (max-width: 650px) {
-            .grid,
-            .result-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .full,
-            .optimal {
-                grid-column: auto;
-            }
-
-            .header h1 {
-                font-size: 26px;
-            }
-        }
-    </style>
-</head>
-
-<body>
-
-<div class="container">
-
-    <div class="header">
-        <h1>☀️ Solar ORC Fluid Recommendation Engine</h1>
-        <p>Optimize Organic Rankine Cycle working-fluid selection using solar energy conditions</p>
-    </div>
-
-    <div class="card">
-
-        <div class="grid">
-
-            <div class="input-group">
-                <label>Solar Irradiance (W/m²)</label>
-                <input type="number" id="solarIrradiance"
-                       value="800" min="1">
-            </div>
-
-            <div class="input-group">
-                <label>Collector Area (m²)</label>
-                <input type="number" id="collectorArea"
-                       value="20" min="0.1" step="0.1">
-            </div>
-
-            <div class="input-group">
-                <label>Collector Efficiency (%)</label>
-                <input type="number" id="collectorEfficiency"
-                       value="60" min="1" max="100" step="0.1">
-            </div>
-
-            <div class="input-group">
-                <label>Ambient Temperature (°C)</label>
-                <input type="number" id="ambientTemperature"
-                       value="30" step="0.1">
-            </div>
-
-            <div class="input-group full">
-                <label>Working Fluid</label>
-
-                <select id="workingFluid">
-                    <option value="Auto">Auto - Recommend Best Fluid</option>
-                    <option value="R245fa">R245fa</option>
-                    <option value="R134a">R134a</option>
-                    <option value="R123">R123</option>
-                    <option value="Isobutane">Isobutane</option>
-                </select>
-            </div>
-
-        </div>
-
-        <button id="simulateButton" onclick="runSimulation()">
-            🔬 Run ORC Simulation
-        </button>
-
-        <div id="error" class="error"></div>
-
-        <div id="results" class="results">
-
-            <h2>Simulation Results</h2>
-
-            <div class="result-grid">
-
-                <div class="result-box optimal">
-                    <span>Recommended Working Fluid</span>
-                    <strong id="workingFluidResult">-</strong>
-                </div>
-
-                <div class="result-box">
-                    <span>Heat Absorption Rate</span>
-                    <strong id="heatResult">-</strong>
-                </div>
-
-                <div class="result-box">
-                    <span>Net Power Output</span>
-                    <strong id="powerResult">-</strong>
-                </div>
-
-                <div class="result-box">
-                    <span>System Efficiency</span>
-                    <strong id="efficiencyResult">-</strong>
-                </div>
-
-                <div class="result-box">
-                    <span>Evaporator Pressure</span>
-                    <strong id="evaporatorResult">-</strong>
-                </div>
-
-                <div class="result-box">
-                    <span>Condenser Pressure</span>
-                    <strong id="condenserResult">-</strong>
-                </div>
-
-            </div>
-
-        </div>
-
-    </div>
-
-    <div class="footer">
-        Solar ORC Working Fluid Recommendation Engine | CogenAi
-    </div>
-
-</div>
-
-
-<script>
-
-async function runSimulation() {
-
-    const button = document.getElementById("simulateButton");
-
-    const errorBox = document.getElementById("error");
-
-    const resultsBox = document.getElementById("results");
-
-    button.disabled = true;
-    button.innerText = "Running Simulation...";
-
-    errorBox.style.display = "none";
-
-    const data = {
-        solarIrradiance: Number(
-            document.getElementById("solarIrradiance").value
-        ),
-
-        collectorArea: Number(
-            document.getElementById("collectorArea").value
-        ),
-
-        collectorEfficiency: Number(
-            document.getElementById("collectorEfficiency").value
-        ),
-
-        ambientTemperature: Number(
-            document.getElementById("ambientTemperature").value
-        ),
-
-        workingFluid:
-            document.getElementById("workingFluid").value
-    };
-
-    try {
-
-        const response = await fetch("/simulate", {
-
-            method: "POST",
-
-            headers: {
-                "Content-Type": "application/json"
-            },
-
-            body: JSON.stringify(data)
-
-        });
-
-        const result = await response.json();
-
-        if (!response.ok || result.error) {
-            throw new Error(result.error || "Simulation failed.");
-        }
-
-        document.getElementById("workingFluidResult").innerText =
-            result.optimalWorkingFluid ||
-            result.workingFluid ||
-            "-";
-
-        document.getElementById("heatResult").innerText =
-            Number(result.heatAbsorptionRate).toFixed(3) + " kW";
-
-        document.getElementById("powerResult").innerText =
-            Number(result.netPowerOutput).toFixed(3) + " kW";
-
-        document.getElementById("efficiencyResult").innerText =
-            Number(result.systemEfficiency).toFixed(2) + " %";
-
-        document.getElementById("evaporatorResult").innerText =
-            Number(result.evaporatorPressure).toFixed(2) + " bar";
-
-        document.getElementById("condenserResult").innerText =
-            Number(result.condenserPressure).toFixed(2) + " bar";
-
-        resultsBox.style.display = "block";
-
-    } catch (error) {
-
-        errorBox.innerText = "Error: " + error.message;
-
-        errorBox.style.display = "block";
-
-    }
-
-    button.disabled = false;
-    button.innerText = "🔬 Run ORC Simulation";
-}
-
-</script>
-
-</body>
-</html>
+        evap_pressure = evaporator_pressure.get(fluid, 10.0)
+        cond_pressure = condenser_pressure.get(fluid, 2.0)
+
+        # -------------------------------------------------
+        # Return results to index.html
+        # -------------------------------------------------
+        return jsonify({
+            "optimalWorkingFluid": fluid,
+            "heatAbsorptionRate": round(heat_absorption_kw, 3),
+            "netPowerOutput": round(net_power, 3),
+            "systemEfficiency": round(system_efficiency, 2),
+            "evaporatorPressure": round(evap_pressure, 2),
+            "condenserPressure": round(cond_pressure, 2)
+        })
+
+    except Exception as e:
+
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+
+if __name__ == "__main__":
+    app.run(
+        host="0.0.0.0",
+        port=5000
+    )
